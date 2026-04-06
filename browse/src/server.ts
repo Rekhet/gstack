@@ -1445,11 +1445,34 @@ async function start() {
             domains: pairBody.domains,
             rateLimit: pairBody.rateLimit,
           });
+          // Verify tunnel is actually alive before reporting it (ngrok may have died externally)
+          let verifiedTunnelUrl: string | null = null;
+          if (tunnelActive && tunnelUrl) {
+            try {
+              const probe = await fetch(`${tunnelUrl}/health`, {
+                headers: { 'ngrok-skip-browser-warning': 'true' },
+                signal: AbortSignal.timeout(5000),
+              });
+              if (probe.ok) {
+                verifiedTunnelUrl = tunnelUrl;
+              } else {
+                console.warn(`[browse] Tunnel probe failed (HTTP ${probe.status}), marking tunnel as dead`);
+                tunnelActive = false;
+                tunnelUrl = null;
+                tunnelListener = null;
+              }
+            } catch {
+              console.warn('[browse] Tunnel probe timed out or unreachable, marking tunnel as dead');
+              tunnelActive = false;
+              tunnelUrl = null;
+              tunnelListener = null;
+            }
+          }
           return new Response(JSON.stringify({
             setup_key: setupKey.token,
             expires_at: setupKey.expiresAt,
             scopes: setupKey.scopes,
-            tunnel_url: tunnelActive ? tunnelUrl : null,
+            tunnel_url: verifiedTunnelUrl,
             server_url: `http://127.0.0.1:${server?.port || 0}`,
           }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         } catch {
@@ -1466,10 +1489,24 @@ async function start() {
             status: 403, headers: { 'Content-Type': 'application/json' },
           });
         }
-        if (tunnelActive) {
-          return new Response(JSON.stringify({ url: tunnelUrl, already_active: true }), {
-            status: 200, headers: { 'Content-Type': 'application/json' },
-          });
+        if (tunnelActive && tunnelUrl) {
+          // Verify tunnel is still alive before returning cached URL
+          try {
+            const probe = await fetch(`${tunnelUrl}/health`, {
+              headers: { 'ngrok-skip-browser-warning': 'true' },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (probe.ok) {
+              return new Response(JSON.stringify({ url: tunnelUrl, already_active: true }), {
+                status: 200, headers: { 'Content-Type': 'application/json' },
+              });
+            }
+          } catch {}
+          // Tunnel is dead, reset and fall through to restart
+          console.warn('[browse] Cached tunnel is dead, restarting...');
+          tunnelActive = false;
+          tunnelUrl = null;
+          tunnelListener = null;
         }
         try {
           // Read ngrok authtoken: env var > ~/.gstack/ngrok.env > ngrok native config

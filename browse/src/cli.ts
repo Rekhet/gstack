@@ -623,6 +623,25 @@ async function handlePairAgent(state: ServerState, args: string[]): Promise<void
   // Determine the URL to use
   let serverUrl: string;
   if (pairData.tunnel_url) {
+    // Server already verified the tunnel is alive, but double-check from CLI side
+    // in case of race condition between server probe and our request
+    try {
+      const cliProbe = await fetch(`${pairData.tunnel_url}/health`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (cliProbe.ok) {
+        serverUrl = pairData.tunnel_url;
+      } else {
+        console.warn(`[browse] Tunnel returned HTTP ${cliProbe.status}, attempting restart...`);
+        pairData.tunnel_url = null; // fall through to restart logic
+      }
+    } catch {
+      console.warn('[browse] Tunnel unreachable from CLI, attempting restart...');
+      pairData.tunnel_url = null; // fall through to restart logic
+    }
+  }
+  if (pairData.tunnel_url) {
     serverUrl = pairData.tunnel_url;
   } else if (!localHost) {
     // No tunnel active. Check if ngrok is available and auto-start.

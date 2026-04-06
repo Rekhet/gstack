@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const SERVER_SRC = fs.readFileSync(path.join(import.meta.dir, '../src/server.ts'), 'utf-8');
+const CLI_SRC = fs.readFileSync(path.join(import.meta.dir, '../src/cli.ts'), 'utf-8');
 
 // Helper: extract a block of source between two markers
 function sliceBetween(source: string, startMarker: string, endMarker: string): string {
@@ -187,5 +188,48 @@ describe('Server auth security', () => {
   test('activity events include clientId from token', () => {
     const commandStartBlock = sliceBetween(SERVER_SRC, "Activity: emit command_start", "try {");
     expect(commandStartBlock).toContain('clientId: tokenInfo?.clientId');
+  });
+
+  // ─── Tunnel liveness verification ─────────────────────────────
+
+  // Test 11a: /pair endpoint probes tunnel before returning tunnel_url
+  test('/pair verifies tunnel is alive before returning tunnel_url', () => {
+    const pairBlock = sliceBetween(SERVER_SRC, "url.pathname === '/pair'", "url.pathname === '/tunnel/start'");
+    // Must probe the tunnel URL
+    expect(pairBlock).toContain('verifiedTunnelUrl');
+    expect(pairBlock).toContain('Tunnel probe failed');
+    expect(pairBlock).toContain('marking tunnel as dead');
+    // Must reset tunnel state on failure
+    expect(pairBlock).toContain('tunnelActive = false');
+    expect(pairBlock).toContain('tunnelUrl = null');
+  });
+
+  // Test 11b: /pair returns null tunnel_url when tunnel is dead
+  test('/pair returns verified tunnel URL, not raw tunnelActive flag', () => {
+    const pairBlock = sliceBetween(SERVER_SRC, "url.pathname === '/pair'", "url.pathname === '/tunnel/start'");
+    // Should use verifiedTunnelUrl (probe result), not raw tunnelUrl
+    expect(pairBlock).toContain('tunnel_url: verifiedTunnelUrl');
+    // Must NOT use raw tunnelActive check for the response
+    expect(pairBlock).not.toContain('tunnel_url: tunnelActive ? tunnelUrl');
+  });
+
+  // Test 11c: /tunnel/start probes cached tunnel before returning already_active
+  test('/tunnel/start verifies cached tunnel is alive before returning already_active', () => {
+    const tunnelBlock = sliceBetween(SERVER_SRC, "url.pathname === '/tunnel/start'", "url.pathname === '/refs'");
+    // Must probe before returning cached URL
+    expect(tunnelBlock).toContain('Cached tunnel is dead');
+    expect(tunnelBlock).toContain('tunnelActive = false');
+    // Must fall through to restart when dead
+    expect(tunnelBlock).toContain('restarting');
+  });
+
+  // Test 11d: CLI verifies tunnel_url from server before printing instruction block
+  test('CLI probes tunnel_url before using it in instruction block', () => {
+    const pairSection = sliceBetween(CLI_SRC, 'Determine the URL to use', 'local HOST: write config');
+    // Must probe the tunnel URL
+    expect(pairSection).toContain('cliProbe');
+    expect(pairSection).toContain('Tunnel unreachable from CLI');
+    // Must fall through to restart logic on failure
+    expect(pairSection).toContain('attempting restart');
   });
 });
