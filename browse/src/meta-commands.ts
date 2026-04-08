@@ -112,17 +112,20 @@ export async function handleMetaCommand(
 
     // ─── Visual ────────────────────────────────────────
     case 'screenshot': {
-      // Parse priority: flags (--viewport, --clip) → selector (@ref, CSS) → output path
+      // Parse priority: flags (--viewport, --clip, --base64) → selector (@ref, CSS) → output path
       const page = bm.getPage();
       let outputPath = `${TEMP_DIR}/browse-screenshot.png`;
       let clipRect: { x: number; y: number; width: number; height: number } | undefined;
       let targetSelector: string | undefined;
       let viewportOnly = false;
+      let base64Mode = false;
 
       const remaining: string[] = [];
       for (let i = 0; i < args.length; i++) {
         if (args[i] === '--viewport') {
           viewportOnly = true;
+        } else if (args[i] === '--base64') {
+          base64Mode = true;
         } else if (args[i] === '--clip') {
           const coords = args[++i];
           if (!coords) throw new Error('Usage: screenshot --clip x,y,w,h [path]');
@@ -157,6 +160,24 @@ export async function handleMetaCommand(
       }
       if (viewportOnly && clipRect) {
         throw new Error('Cannot use --viewport with --clip — choose one');
+      }
+
+      // --base64 mode: capture to buffer instead of disk
+      if (base64Mode) {
+        let buffer: Buffer;
+        if (targetSelector) {
+          const resolved = await bm.resolveRef(targetSelector);
+          const locator = 'locator' in resolved ? resolved.locator : page.locator(resolved.selector);
+          buffer = await locator.screenshot({ timeout: 5000 });
+        } else if (clipRect) {
+          buffer = await page.screenshot({ clip: clipRect });
+        } else {
+          buffer = await page.screenshot({ fullPage: !viewportOnly });
+        }
+        if (buffer.length > 10 * 1024 * 1024) {
+          throw new Error('Screenshot too large for --base64 (>10MB). Use disk path instead.');
+        }
+        return `data:image/png;base64,${buffer.toString('base64')}`;
       }
 
       if (targetSelector) {
